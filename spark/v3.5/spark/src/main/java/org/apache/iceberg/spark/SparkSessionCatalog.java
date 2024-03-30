@@ -18,6 +18,7 @@
  */
 package org.apache.iceberg.spark;
 
+import java.util.Arrays;
 import java.util.Map;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hive.conf.HiveConf;
@@ -25,6 +26,7 @@ import org.apache.iceberg.CatalogProperties;
 import org.apache.iceberg.CatalogUtil;
 import org.apache.iceberg.catalog.Catalog;
 import org.apache.iceberg.relocated.com.google.common.base.Preconditions;
+import org.apache.iceberg.relocated.com.google.common.collect.ImmutableMap;
 import org.apache.iceberg.spark.source.HasIcebergCatalog;
 import org.apache.spark.sql.SparkSession;
 import org.apache.spark.sql.catalyst.analysis.NamespaceAlreadyExistsException;
@@ -129,8 +131,38 @@ public class SparkSessionCatalog<T extends TableCatalog & FunctionCatalog & Supp
 
   @Override
   public Identifier[] listTables(String[] namespace) throws NoSuchNamespaceException {
-    // delegate to the session catalog because all tables share the same namespace
-    return getSessionCatalog().listTables(namespace);
+    Identifier[] tablesFromIcebergCatalog = null;
+    try {
+      tablesFromIcebergCatalog = icebergCatalog.listTables(namespace);
+    } catch (NoSuchNamespaceException ignore) {
+      // ignore
+    }
+    Identifier[] tablesFromSessionCatalog;
+    try {
+      tablesFromSessionCatalog = getSessionCatalog().listTables(namespace);
+    } catch (NoSuchNamespaceException ex) {
+      if (tablesFromIcebergCatalog == null) {
+        throw ex;
+      } else {
+        return tablesFromIcebergCatalog;
+      }
+    }
+    if (tablesFromSessionCatalog.length == 0) {
+      return tablesFromIcebergCatalog;
+    } else if (tablesFromIcebergCatalog.length == 0) {
+      return tablesFromSessionCatalog;
+    }
+    Identifier[] both =
+        Arrays.copyOf(
+            tablesFromSessionCatalog,
+            tablesFromSessionCatalog.length + tablesFromIcebergCatalog.length);
+    System.arraycopy(
+        tablesFromIcebergCatalog,
+        0,
+        both,
+        tablesFromSessionCatalog.length,
+        tablesFromIcebergCatalog.length);
+    return both;
   }
 
   @Override
@@ -174,7 +206,21 @@ public class SparkSessionCatalog<T extends TableCatalog & FunctionCatalog & Supp
       throws TableAlreadyExistsException, NoSuchNamespaceException {
     String provider = properties.get("provider");
     if (useIceberg(provider)) {
-      return icebergCatalog.createTable(ident, schema, partitions, properties);
+      try {
+        return icebergCatalog.createTable(ident, schema, partitions, properties);
+      } catch (NoSuchNamespaceException e) {
+        if (icebergCatalog instanceof SupportsNamespaces) {
+          Map<String, String> metadata = ImmutableMap.of();
+          try {
+            ((SupportsNamespaces) icebergCatalog).createNamespace(ident.namespace(), metadata);
+          } catch (NamespaceAlreadyExistsException ignored) {
+            // ignore
+          }
+          return icebergCatalog.createTable(ident, schema, partitions, properties);
+        } else {
+          throw e;
+        }
+      }
     } else {
       // delegate to the session catalog
       return getSessionCatalog().createTable(ident, schema, partitions, properties);
@@ -189,7 +235,21 @@ public class SparkSessionCatalog<T extends TableCatalog & FunctionCatalog & Supp
     TableCatalog catalog;
     if (useIceberg(provider)) {
       if (asStagingCatalog != null) {
-        return asStagingCatalog.stageCreate(ident, schema, partitions, properties);
+        try {
+          return asStagingCatalog.stageCreate(ident, schema, partitions, properties);
+        } catch (NoSuchNamespaceException e) {
+          if (asStagingCatalog instanceof SupportsNamespaces) {
+            Map<String, String> metadata = ImmutableMap.of();
+            try {
+              ((SupportsNamespaces) asStagingCatalog).createNamespace(ident.namespace(), metadata);
+            } catch (NamespaceAlreadyExistsException ignored) {
+              // ignore
+            }
+            return asStagingCatalog.stageCreate(ident, schema, partitions, properties);
+          } else {
+            throw e;
+          }
+        }
       }
       catalog = icebergCatalog;
     } else {
@@ -242,7 +302,21 @@ public class SparkSessionCatalog<T extends TableCatalog & FunctionCatalog & Supp
     TableCatalog catalog;
     if (useIceberg(provider)) {
       if (asStagingCatalog != null) {
-        return asStagingCatalog.stageCreateOrReplace(ident, schema, partitions, properties);
+        try {
+          return asStagingCatalog.stageCreateOrReplace(ident, schema, partitions, properties);
+        } catch (NoSuchNamespaceException e) {
+          if (asStagingCatalog instanceof SupportsNamespaces) {
+            Map<String, String> metadata = ImmutableMap.of();
+            try {
+              ((SupportsNamespaces) asStagingCatalog).createNamespace(ident.namespace(), metadata);
+            } catch (NamespaceAlreadyExistsException ignored) {
+              // ignore
+            }
+            return asStagingCatalog.stageCreateOrReplace(ident, schema, partitions, properties);
+          } else {
+            throw e;
+          }
+        }
       }
       catalog = icebergCatalog;
     } else {
